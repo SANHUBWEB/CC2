@@ -2,7 +2,7 @@
 <html lang="hi" class="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>SanCam IP • Worldwide CCTV & Cloud Hub</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -248,7 +248,7 @@
         <main id="section-broadcaster" class="flex-1 w-full max-w-5xl mx-auto px-4 py-5 flex flex-col gap-5">
 
             <!-- Compact Live Camera & Microphone Preview Card -->
-            <section class="apple-card bg-white/90 dark:bg-zinc-950/90 border border-zinc-200 dark:border-white/10 rounded-3xl overflow-hidden shadow-xl">
+            <section id="hiddenPreviewCard" style="display:none" class="apple-card bg-white/90 dark:bg-zinc-950/90 border border-zinc-200 dark:border-white/10 rounded-3xl overflow-hidden shadow-xl">
                 <!-- Screen Header Bar -->
                 <div class="px-4 py-2.5 bg-zinc-100/90 dark:bg-zinc-900/90 border-b border-zinc-200 dark:border-white/10 flex flex-wrap items-center justify-between gap-2 text-xs">
                     <div class="flex items-center gap-2">
@@ -362,7 +362,7 @@
                 </div>
             </section>
 
-            <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <section id="hiddenInfoCards" style="display:none" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 <!-- 1. IP Address -->
                 <div class="apple-card bg-white/90 dark:bg-zinc-950/90 border border-zinc-200 dark:border-white/10 p-3.5 rounded-2xl flex flex-col justify-between gap-1.5">
                     <div class="flex items-center justify-between">
@@ -2178,9 +2178,37 @@
             p.on('error', e => { if (!peer || peer === p) { if (e.type === 'unavailable-id') { try { p.destroy(); } catch (x) {} return rej(e); } } });
         });
     }
+    let ownFacing = 'environment', flipping = false;
+    async function hostFlip() {
+        if (flipping || !live) return; flipping = true;
+        try {
+            if (!ownStream && typeof switchCameraFacing === 'function') {
+                await switchCameraFacing();           // shared preview camera
+                stream = localStream;
+            } else {
+                ownFacing = ownFacing === 'user' ? 'environment' : 'user';
+                const old = stream;
+                const v = { facingMode: ownFacing };
+                try { stream = await navigator.mediaDevices.getUserMedia({ video: v, audio: true }); }
+                catch (e) { stream = await navigator.mediaDevices.getUserMedia({ video: v, audio: false }); }
+                if (old) old.getTracks().forEach(t => t.stop());
+            }
+            calls.forEach(c => {
+                const pc = c.peerConnection; if (!pc) return;
+                pc.getSenders().forEach(snd => {
+                    if (!snd.track) return;
+                    const nt = stream.getTracks().find(t => t.kind === snd.track.kind);
+                    if (nt) snd.replaceTrack(nt).catch(() => {});
+                });
+            });
+            toast('Camera flip ho gaya', 'success');
+        } catch (e) { toast('Camera flip nahi hua', 'error'); }
+        flipping = false;
+    }
     function wirePeer(p) {
         // viewer connects first, then host sends the video to that viewer
         p.on('connection', conn => {
+            conn.on('data', d => { if (d && d.cmd === 'flip') hostFlip(); });
             conn.on('open', () => {
                 if (!live || !stream) return;
                 const c = p.call(conn.peer, stream);
@@ -2236,18 +2264,29 @@
         [...document.body.children].forEach(e => e.style.display = 'none');
         const w = document.createElement('div');
         w.className = 'fixed inset-0 bg-black text-white flex flex-col';
+        w.style.cssText = 'height:100dvh;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)';
         w.innerHTML = `
-        <div class="flex items-center justify-between px-4 py-3 border-b border-white/10"><div class="font-bold tracking-widest text-sm">SAN CAM <span class="text-red-500">LIVE</span></div><span id="wBadge" class="px-2 py-1 rounded bg-zinc-700 text-xs font-bold">CONNECTING</span></div>
-        <div class="relative flex-1 min-h-0 bg-black" id="wBox">
-            <video id="wVid" autoplay playsinline muted class="absolute inset-0 w-full h-full object-contain bg-black"></video>
-            <div id="wMsg" class="absolute inset-0 flex items-center justify-center text-center p-6 text-zinc-300 bg-black/70">Connecting to live camera...</div>
-            <div class="absolute bottom-0 inset-x-0 p-3 flex justify-center gap-2 text-sm bg-gradient-to-t from-black/80 to-transparent">
-                <button id="wMute" class="px-3 py-2 rounded-lg bg-white/15">🔇 Unmute</button><button id="wRe" class="px-3 py-2 rounded-lg bg-white/15">⟳ Reconnect</button><button id="wFs" class="px-3 py-2 rounded-lg bg-white/15">⛶ Full screen</button>
+        <style>
+            #wBar button{white-space:nowrap;min-height:44px;transition:transform .1s,background .15s}
+            #wBar button:hover{background:rgba(255,255,255,.28)}
+            #wBar button:active{transform:scale(.95)}
+            @media (max-height:480px){#wHead{padding:4px 12px!important}#wBar{padding:6px!important}#wBar button{min-height:36px;padding:4px 10px!important}}
+            @media (min-width:768px){#wStage{padding:16px}#wBox{border-radius:20px;border:1px solid rgba(255,255,255,.12);overflow:hidden}}
+        </style>
+        <div id="wHead" class="flex items-center justify-between px-4 py-3 border-b border-white/10 shrink-0"><div class="font-bold tracking-widest text-sm sm:text-base">SAN CAM <span class="text-red-500">LIVE</span></div><span id="wBadge" class="px-2 py-1 rounded bg-zinc-700 text-xs font-bold">CONNECTING</span></div>
+        <div id="wStage" class="flex-1 min-h-0 flex flex-col w-full max-w-[1400px] mx-auto">
+            <div class="relative flex-1 min-h-0 bg-black" id="wBox">
+                <video id="wVid" autoplay playsinline muted class="absolute inset-0 w-full h-full object-contain bg-black"></video>
+                <div id="wMsg" class="absolute inset-0 flex items-center justify-center text-center p-6 text-zinc-300 bg-black/70">Connecting to live camera...</div>
+                <div id="wBar" class="absolute bottom-0 inset-x-0 p-3 flex flex-wrap justify-center gap-2 text-sm sm:text-base bg-gradient-to-t from-black/85 to-transparent">
+                    <button id="wFlip" class="px-3 py-2 rounded-lg bg-white/15">🔄 Rear/Front</button><button id="wRec" class="px-3 py-2 rounded-lg bg-red-600/80">⏺ Record</button><button id="wSnap" class="px-3 py-2 rounded-lg bg-white/15">📸 Snap</button>
+                    <button id="wMute" class="px-3 py-2 rounded-lg bg-white/15">🔇 Unmute</button><button id="wRe" class="px-3 py-2 rounded-lg bg-white/15">⟳ Reconnect</button><button id="wFs" class="px-3 py-2 rounded-lg bg-white/15">⛶ Full screen</button>
+                </div>
             </div>
         </div>`;
         document.body.appendChild(w);
         const g = id => w.querySelector('#' + id), v = g('wVid');
-        let vp = null, timer = null, got = false;
+        let vp = null, timer = null, got = false, vc = null;
         const msg = (t, show) => { g('wMsg').textContent = t; g('wMsg').classList.toggle('hidden', !show); };
         const badge = (t, on) => { g('wBadge').textContent = t; g('wBadge').className = 'px-2 py-1 rounded text-xs font-bold ' + (on ? 'bg-red-600' : 'bg-zinc-700'); };
         function connect() {
@@ -2256,7 +2295,7 @@
             msg('Connecting to live camera...', true); badge('CONNECTING', false);
             const p = new Peer({ config: ICE }); vp = p;
             p.on('open', () => {
-                const conn = p.connect(watchId, { reliable: true });
+                const conn = p.connect(watchId, { reliable: true }); vc = conn;
                 conn.on('close', () => { if (vp === p) { badge('OFFLINE', false); msg('Live band ho gaya. Reconnect dabayein.', true); } });
             });
             p.on('call', c => {
@@ -2270,9 +2309,47 @@
             p.on('error', e => { if (vp !== p) return; badge('OFFLINE', false); msg(e.type === 'peer-unavailable' ? 'Camera abhi LIVE nahi hai. Live ON karke Reconnect dabayein.' : 'Connection error. Reconnect dabayein.', true); });
             timer = setTimeout(() => { if (!got && vp === p) { badge('OFFLINE', false); msg('Video nahi aa raha. Reconnect dabayein.', true); } }, 20000);
         }
-        g('wRe').onclick = connect;
+        const note = t => { const m = document.createElement('div'); m.textContent = t; m.className = 'fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-white text-black text-sm font-semibold'; w.appendChild(m); setTimeout(() => m.remove(), 2200); };
+        const save = (blob, name) => { const u = URL.createObjectURL(blob), a = document.createElement('a'); a.href = u; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 4000); };
+        const stamp = () => new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        g('wFlip').onclick = () => {
+            if (vc && vc.open) { vc.send({ cmd: 'flip' }); note('Camera change kar rahe hain...'); }
+            else note('Pehle live connect hone dein');
+        };
+        g('wSnap').onclick = () => {
+            if (!v.videoWidth) { note('Video abhi nahi aaya'); return; }
+            const c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight;
+            c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+            c.toBlob(b => { if (b) { save(b, 'SanCam_' + stamp() + '.png'); note('Snapshot saved'); } }, 'image/png');
+        };
+        let rec = null, chunks = [], recTick = null, recStart = 0;
+        const recStop = () => { if (rec && rec.state !== 'inactive') rec.stop(); };
+        g('wRec').onclick = () => {
+            if (rec && rec.state === 'recording') { recStop(); return; }
+            const st = v.srcObject;
+            if (!st || !window.MediaRecorder) { note('Recording abhi possible nahi'); return; }
+            const types = ['video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+            const mt = types.find(t => MediaRecorder.isTypeSupported(t)) || '';
+            try { rec = new MediaRecorder(st, mt ? { mimeType: mt } : undefined); } catch (e) { note('Recording support nahi'); return; }
+            chunks = [];
+            rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+            rec.onstop = () => {
+                clearInterval(recTick); g('wRec').textContent = '⏺ Record';
+                const type = rec.mimeType || mt || 'video/webm';
+                if (chunks.length) { save(new Blob(chunks, { type }), 'SanCam_' + stamp() + (type.includes('mp4') ? '.mp4' : '.webm')); note('Recording saved'); }
+            };
+            rec.start(1000); recStart = Date.now();
+            recTick = setInterval(() => { const sec = Math.floor((Date.now() - recStart) / 1000); g('wRec').textContent = '⏹ ' + String(Math.floor(sec / 60)).padStart(2, '0') + ':' + String(sec % 60).padStart(2, '0'); }, 500);
+        };
+        g('wRe').onclick = () => { recStop(); connect(); };
         g('wMute').onclick = () => { v.muted = !v.muted; g('wMute').textContent = v.muted ? '🔇 Unmute' : '🔊 Mute'; v.play().catch(() => {}); };
         g('wFs').onclick = () => { const b = g('wBox'); if (b.requestFullscreen) b.requestFullscreen(); else if (b.webkitRequestFullscreen) b.webkitRequestFullscreen(); else if (v.webkitEnterFullscreen) v.webkitEnterFullscreen(); };
+        document.addEventListener('keydown', e => {
+            if (e.ctrlKey || e.metaKey || e.altKey) return;
+            const k = e.key.toLowerCase();
+            if (k === 'f') g('wFs').click(); else if (k === 'm') g('wMute').click();
+            else if (k === 's') g('wSnap').click(); else if (k === 'r') g('wRec').click();
+        });
         connect();
     }
 
